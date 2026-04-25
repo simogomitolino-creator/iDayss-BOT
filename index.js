@@ -34,3 +34,6 @@ for (const file of eventFiles) {
     client.on(event.name, (...args) => event.execute(...args, client));
   }
 }
+
+require('dotenv').config();
+client.login(process.env.TOKEN);
