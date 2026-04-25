@@ -12,7 +12,6 @@ const client = new Client({
 });
 
 client.commands = new Collection();
-client.eventModules = new Map(); // Per condividere dati tra eventi
 
 // Load commands
 const commandsPath = path.join(__dirname, 'commands');
@@ -29,13 +28,9 @@ const eventsPath = path.join(__dirname, 'events');
 const eventFiles = fs.readdirSync(eventsPath).filter(f => f.endsWith('.js'));
 for (const file of eventFiles) {
   const event = require(path.join(eventsPath, file));
-  // Salva il modulo per condivisione dati (es. pendingAnnunci)
-  client.eventModules.set(event.name, event);
   if (event.once) {
     client.once(event.name, (...args) => event.execute(...args, client));
   } else {
     client.on(event.name, (...args) => event.execute(...args, client));
   }
 }
-
-require('dotenv').config();
