@@ -1,8 +1,12 @@
 const {
   ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder,
-  EmbedBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits
+  EmbedBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits,
+  Events
 } = require('discord.js');
 require('dotenv').config();
+
+// Salva temporaneamente i dati dell'annuncio in attesa dell'immagine
+const pendingAnnunci = new Map();
 
 module.exports = {
   name: 'interactionCreate',
@@ -28,6 +32,7 @@ module.exports = {
       if (interaction.customId.startsWith('buy_')) {
         const msgId = interaction.customId.replace('buy_', '');
         const originalEmbed = interaction.message.embeds[0];
+        const originalImage = interaction.message.attachments.first() || null;
         const guild = interaction.guild;
         const user = interaction.user;
         const ch = await guild.channels.create({
@@ -90,6 +95,44 @@ module.exports = {
         return;
       }
 
+      // ORDER BOOST
+      if (interaction.customId === 'order_boost') {
+        const guild = interaction.guild;
+        const user = interaction.user;
+        const existing = guild.channels.cache.find(c => c.name === `boost-${user.username}`);
+        if (existing) {
+          await interaction.reply({ content: `❌ You already have an open boost ticket: ${existing}`, ephemeral: true }); return;
+        }
+        const ch = await guild.channels.create({
+          name: `boost-${user.username}`,
+          type: ChannelType.GuildText,
+          parent: process.env.TICKET_CATEGORY_ID || null,
+          permissionOverwrites: [
+            { id: guild.roles.everyone, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+            { id: process.env.STAFF_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+          ],
+        });
+        const e = new EmbedBuilder()
+          .setTitle('🚀 Order Boost')
+          .setDescription(
+            `Welcome ${user}!\n\n` +
+            'Please provide the following information:\n\n' +
+            '**1.** 🏆 Current trophies\n' +
+            '**2.** 🎯 Desired trophies / rank\n' +
+            '**3.** 🎮 Brawler (if specific)\n' +
+            '**4.** 💬 Any additional info\n\n' +
+            'A staff member will get back to you shortly! ✅'
+          )
+          .setColor(0x5865F2)
+          .setFooter({ text: "iDayss's Service • Order Boost" })
+          .setTimestamp();
+        const closeBtn = new ButtonBuilder().setCustomId(`close_ticket_${ch.id}`).setLabel('🔒 Close Ticket').setStyle(ButtonStyle.Danger);
+        await ch.send({ content: `${user} <@&${process.env.STAFF_ROLE_ID}>`, embeds: [e], components: [new ActionRowBuilder().addComponents(closeBtn)] });
+        await interaction.reply({ content: `✅ Boost ticket opened: ${ch}`, ephemeral: true });
+        return;
+      }
+
       // PARTNERSHIP BUTTON
       if (interaction.customId === 'request_partnership') {
         const modal = new ModalBuilder().setCustomId('partnership_modal').setTitle('📋 Richiesta Partnership');
@@ -101,6 +144,25 @@ module.exports = {
         );
         await interaction.showModal(modal); return;
       }
+
+      // SKIP IMAGE
+      if (interaction.customId.startsWith('skip_image_')) {
+        const userId = interaction.customId.replace('skip_image_', '');
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: '❌ Non puoi usare questo pulsante!', ephemeral: true }); return;
+        }
+        const data = pendingAnnunci.get(userId);
+        if (!data) { await interaction.reply({ content: '❌ Dati annuncio scaduti, riprova con /sell', ephemeral: true }); return; }
+
+        const accCh = interaction.guild.channels.cache.get(process.env.ACCOUNTS_CHANNEL_ID);
+        if (!accCh) { await interaction.reply({ content: '❌ Canale accounts non trovato!', ephemeral: true }); return; }
+
+        await accCh.send({ embeds: [data.embed], components: [data.row] });
+        pendingAnnunci.delete(userId);
+        await interaction.message.delete().catch(() => {});
+        await interaction.reply({ content: `✅ Annuncio pubblicato in ${accCh} (senza immagine)!`, ephemeral: true });
+        return;
+      }
     }
 
     // ─── MODALS ───
@@ -108,17 +170,16 @@ module.exports = {
 
       // SELL MODAL
       if (interaction.customId === 'sell_account_modal') {
-        const title      = interaction.fields.getTextInputValue('acc_title');
-        const trophies   = interaction.fields.getTextInputValue('acc_trophies');
-        const price      = interaction.fields.getTextInputValue('acc_price');
-        const p11line    = interaction.fields.getTextInputValue('acc_p11');
-        const extra      = interaction.fields.getTextInputValue('acc_extra') || '';
+        const title       = interaction.fields.getTextInputValue('acc_title');
+        const trophies    = interaction.fields.getTextInputValue('acc_trophies');
+        const price       = interaction.fields.getTextInputValue('acc_price');
+        const p11line     = interaction.fields.getTextInputValue('acc_p11');
+        const extra       = interaction.fields.getTextInputValue('acc_extra') || '';
 
-        // Parse "P11 | Hypercharge | Master"
         const parts = p11line.split('|').map(s => s.trim());
-        const p11        = parts[0] || '?';
+        const p11         = parts[0] || '?';
         const hypercharge = parts[1] || '?';
-        const master     = parts[2] || 'N/A';
+        const master      = parts[2] || 'N/A';
 
         const msgId = Date.now().toString();
 
@@ -126,12 +187,12 @@ module.exports = {
           .setTitle(`🏆 ${title}`)
           .setColor(0xE63946)
           .addFields(
-            { name: '🏆 Coppe', value: `**${trophies}**`, inline: true },
-            { name: '💰 Prezzo', value: `**${price}€**`, inline: true },
-            { name: '\u200B', value: '\u200B', inline: true },
-            { name: '⭐ P11', value: `**${p11}**`, inline: true },
+            { name: '🏆 Coppe',       value: `**${trophies}**`,    inline: true },
+            { name: '💰 Prezzo',      value: `**${price}€**`,      inline: true },
+            { name: '\u200B',         value: '\u200B',              inline: true },
+            { name: '⭐ P11',         value: `**${p11}**`,         inline: true },
             { name: '⚡ Hypercharge', value: `**${hypercharge}**`, inline: true },
-            { name: '👑 Master', value: `**${master}**`, inline: true },
+            { name: '👑 Master',      value: `**${master}**`,      inline: true },
           )
           .setFooter({ text: "iDayss Service • Account Shop" })
           .setTimestamp();
@@ -142,12 +203,22 @@ module.exports = {
         const soldBtn = new ButtonBuilder().setCustomId(`sold_${msgId}`).setLabel('✅ Sold [STAFF]').setStyle(ButtonStyle.Danger);
         const row = new ActionRowBuilder().addComponents(buyBtn, soldBtn);
 
-        const accCh = interaction.guild.channels.cache.get(process.env.ACCOUNTS_CHANNEL_ID);
-        if (!accCh) {
-          await interaction.reply({ content: '❌ Imposta ACCOUNTS_CHANNEL_ID nel .env!', ephemeral: true }); return;
-        }
-        await accCh.send({ embeds: [embed], components: [row] });
-        await interaction.reply({ content: `✅ Annuncio pubblicato in ${accCh}!`, ephemeral: true });
+        // Salva in attesa immagine
+        pendingAnnunci.set(interaction.user.id, { embed, row, msgId });
+
+        // Auto-cancella dopo 5 minuti
+        setTimeout(() => pendingAnnunci.delete(interaction.user.id), 5 * 60 * 1000);
+
+        const skipBtn = new ButtonBuilder()
+          .setCustomId(`skip_image_${interaction.user.id}`)
+          .setLabel('⏭️ Salta immagine')
+          .setStyle(ButtonStyle.Secondary);
+
+        await interaction.reply({
+          content: `📸 **Adesso invia l'immagine dell'account in questo canale!**\nHai **5 minuti** per mandarla.\nOppure clicca il pulsante per pubblicare senza immagine.`,
+          components: [new ActionRowBuilder().addComponents(skipBtn)],
+          ephemeral: true,
+        });
         return;
       }
 
@@ -163,8 +234,8 @@ module.exports = {
           .setTitle(`🤝 Partnership — ${name}`)
           .setColor(0x5865F2)
           .addFields(
-            { name: '📨 Link', value: invite, inline: true },
-            { name: '👥 Membri', value: members, inline: true },
+            { name: '📨 Link',        value: invite,      inline: true },
+            { name: '👥 Membri',      value: members,     inline: true },
             { name: '📝 Descrizione', value: description },
           )
           .setFooter({ text: `Proposto da ${interaction.user.tag}` }).setTimestamp();
@@ -174,4 +245,9 @@ module.exports = {
       }
     }
   },
+
+  // Esportiamo la Map per usarla nell'evento messageCreate
+  getPendingAnnunci() {
+    return pendingAnnunci;
+  }
 };
